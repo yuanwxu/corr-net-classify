@@ -5,6 +5,8 @@ library(banocc)
 library(reticulate)
 library(tidytext) # for order factor within facets in ggplot
 library(patchwork)
+theme_set(theme_minimal())
+options(bitmapType='cairo') # fix "unnable to open connection to X11 display"
 
 # Read banocc fits for control and case (CRC) 
 read_bfits <- function(){
@@ -111,14 +113,39 @@ plot_freq_nnode <- function(node_imp_dgcnn, n){
     
     ggplot(df, aes(n_node)) +
         geom_bar() +
-        labs(x = "")
+        labs(x = "", title = paste0(n, "-node"))
+}
+
+# Show abs(LOR) as a function of k in k-node importance
+plot_trend_lor <- function(node_imp_dgcnn){
+    df <- node_imp_dgcnn %>%
+        mutate(med = map_dbl(lor, ~ median(abs(.x)))) %>%
+        group_by(run, k) %>%
+        slice_max(med) %>%
+        select(run, k, med) %>%
+        ungroup()
+    
+    ggplot(df, aes(k, med)) +
+        geom_line(aes(group = run), alpha = 0.3) +
+        geom_point(alpha = 0.3)+
+        geom_smooth(se = FALSE) +
+        labs(y = "median |LOR|")
 }
 
 node_imp_dgcnn <- read_node_imp()
 p_1node <- plot_1node_imp(node_imp_dgcnn, ntop = 5)
 p_freq_3node <- plot_freq_nnode(node_imp_dgcnn, n = 3)
 
+p_freq_nnode <- vector("list", 6)
+for (i in 1:6) {
+    p_freq_nnode[[i]] <- plot_freq_nnode(node_imp_dgcnn, i) +
+        theme(axis.text.x=element_text(angle = 90, vjust = 0.5, face = "bold.italic"))
+}
+wrap_plots(p_freq_nnode, nrow = 2)
+ggsave("p_freq_nnode.png", width = 10, height = 8, units = "in", dpi = 350)
 
+p_trend_lor <- plot_trend_lor(node_imp_dgcnn)
+ggsave("p_trend_lor.png", dpi = 350)
 
 
 # Inspect BAnOCC infered correlations -------------------------------------
@@ -126,7 +153,7 @@ p_freq_3node <- plot_freq_nnode(node_imp_dgcnn, n = 3)
 library(igraph)
 
 # Visualize posterior median correlation networks involving important nodes selected by the
-# greedy search heuristic. These nodes (specified via 'nodes_to_show') are highlighted (yellow)
+# greedy search heuristic. These nodes (specified via 'nodes_to_show') are in square shape
 # Node size prop to sqrt of degree.
 # Edge width prop to corr strength
 # Edge color indicates corr sign
@@ -145,15 +172,42 @@ viz_corr_network <- function(nonzero_cor, nodes_to_show, corr_thresh,
         select(source, target, median) %>%
         graph_from_data_frame(directed = FALSE)
     
-    vc <- ifelse(V(ig)$name %in% nodes_to_show, "yellow", "white") # node color
-    vs <- 6*sqrt(degree(ig)) # node size    
-    ew <- abs(E(ig)$median*5) # edge width
-    l <- layout_with_graphopt(ig, charge = 0.05, mass = 50) # layout
+    # vc <- ifelse(V(ig)$name %in% nodes_to_show, "yellow", NA) # node color
+    vshape <- ifelse(V(ig)$name %in% nodes_to_show, "square", "circle") # node shape
+    vs <- 2.5*sqrt(degree(ig)) # node size    
+    ew <- abs(E(ig)$median*3) # edge width
+    l <- layout_nicely(ig)
+    # l <- layout_with_graphopt(ig, charge = 0.05, mass = 50) # layout
     if (show_comm) { # Run community detection
         clp <- cluster_optimal(ig)
-        plot(clp, ig, col = vc, edge.width = ew, 
-             edge.color = ifelse(E(ig)$median > 0, "blue", "orangered"), vertex.size = vs,
-             vertex.label.color="black", layout = l, main = title)
+        vlc <- membership(clp) # node label color
+        l <- layout_in_circle(ig, order = order(membership(clp))) # circular layout
+        
+        # Fine-tunning node labels so they don't overlap
+        vldist <- rep(1, length(V(ig)$name))
+        vldeg <- rep(-0.25*pi, length(V(ig)$name))
+        if (grp == "Ctrl") {
+            vldist[which(V(ig)$name == "g__Lachnospira")] <- -1 
+            vldist[which(V(ig)$name == "f__Enterobacteriaceae")] <- -1
+            vldeg[which(V(ig)$name %in% c("g__Sutterella", "g__Bifidobacterium", 
+                                          "g__Eggerthella", "g__Coprobacillus",
+                                          "g__[Eubacterium]", "g__Akkermansia"))] <- 0
+            vldist[which(V(ig)$name == "g__Akkermansia")] <- -4
+            vldist[which(V(ig)$name %in% c("g__Sutterella", "g__Eggerthella"))] <- 3.6
+            vldist[which(V(ig)$name == "g__Bifidobacterium")] <- 4.1
+            vldist[which(V(ig)$name == "g__[Eubacterium]")] <- 4.2
+            vldist[which(V(ig)$name == "g__Coprobacillus")] <- 4.1
+            
+        }
+        if (grp == "Case") {
+            vldist[which(V(ig)$name == "g__Bifidobacterium")] <- -1   
+        }
+        
+        plot(ig, vertex.shape = vshape, vertex.color = NA, vertex.size = vs, 
+             vertex.label.dist = vldist, vertex.label.degree = vldeg,
+             vertex.label.cex=0.8, vertex.label.font = 4, vertex.label.color=vlc,
+             edge.width = ew, edge.color = ifelse(E(ig)$median > 0, "lightblue2", "tomato"), 
+             layout = l, main = title)
     }
     else {
         plot(ig, col = vc, edge.width = ew, 
@@ -165,7 +219,19 @@ viz_corr_network <- function(nonzero_cor, nodes_to_show, corr_thresh,
 
 
 nonzero_cor <- get_nonzero_corr_all()
-viz_corr_network(nonzero_cor, corr_thresh = 0.4, grp = "Case", show_comm = TRUE)
-viz_corr_network(nonzero_cor, corr_thresh = 0.4, grp = "Ctrl", show_comm = TRUE)
+nodes_to_show <- c("g__Prevotella", "g__Bifidobacterium", "g__Lachnospira", "f_Lachnospiraceae", 
+                   "g__Parabacteroides", "g__Sutterella", "g__Blautia" )
+
+png("p_corr_net_mbqc.png", width = 13.5, height = 7.5, units = "in", bg = "transparent", res = 350)
+par(mfrow=c(1,2), mar=c(1,3,2,5.5))
+viz_corr_network(nonzero_cor, nodes_to_show, corr_thresh = 0.4, grp = "Case", 
+                 show_comm = TRUE)
+title("CRC", line = -0.5)
+viz_corr_network(nonzero_cor, nodes_to_show, corr_thresh = 0.4, grp = "Ctrl", 
+                 show_comm = TRUE)
+title("Healthy", line = -0.5)
+par(mfrow=c(1,1))
+dev.off()
+
 
 

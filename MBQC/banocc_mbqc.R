@@ -136,4 +136,6 @@ hmc_params <- list(iter = 8000,
                    thin = 20) # 800 posterior corr networks for control and 800 for case
 run_banocc_mbqc(X_mbqc_ctrl, X_mbqc_case, banocc_params, hmc_params)
 
+print(warnings())
+
 # change adapt_delta parameter in stan to 0.95 ? (should change for simulated data )

@@ -22,6 +22,7 @@ from tensorflow.keras import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import Dense, Conv1D, MaxPool1D, Dropout, Flatten
 from tensorflow.keras.losses import binary_crossentropy, categorical_crossentropy
+from tensorflow.keras.metrics import Precision, Recall, AUC
 import tensorflow as tf
 import pickle
 
@@ -77,7 +78,8 @@ def train_dgcnn(graphs, graph_labels, n_epochs=50):
   predictions = Dense(units=1, activation="sigmoid")(x_out)
   model = Model(inputs=x_inp, outputs=predictions)
   model.compile(
-      optimizer=Adam(learning_rate=0.0001), loss=binary_crossentropy, metrics=["acc"],
+      optimizer=Adam(learning_rate=0.0001), loss=binary_crossentropy, 
+      metrics=["accuracy", Precision(name='precision'), Recall(name='recall'), AUC(name='auc')],
   )
 
   train_graphs, test_graphs = model_selection.train_test_split(
@@ -113,7 +115,7 @@ def train_dgcnn(graphs, graph_labels, n_epochs=50):
   for name, val in zip(model.metrics_names, test_metrics):
       print("\t{}: {:0.4f}".format(name, val))
   
-  return model, history
+  return model, test_metrics, history
 
 class ImportanceDGCNN:  
 
@@ -373,8 +375,9 @@ def save_imp_res(node_res, edge_res=None, runid='run'):
 def main():
     K = 10 # number of DGCNN runs
     N_EPOCH = 100 # number of epochs per run
-    IMP_SUBSAMPLE = 0.5 # fraction of graphs sampled per DGCNN run used to calculate importance
-    N = 10 # up to N-node importance 
+    IMP_SUBSAMPLE = 0.3 # fraction of graphs sampled per DGCNN run used to calculate importance,
+                        # decrease this if out-of-memory
+    N = 21 # up to N-node importance 
 
     W_ctrl = pd.read_csv('W_mbqc_ctrl.csv', dtype={'graph_id': 'int'})
     W_case = pd.read_csv('W_mbqc_case.csv', dtype={'graph_id': 'int'})
@@ -387,10 +390,12 @@ def main():
 
     nn_imp_result = []
     history = []
+    test_metrics = []
     for k in range(K):
         print(f"DGCNN Run {k+1} ...")
-        model, hist = train_dgcnn(graphs, graph_labels, n_epochs=N_EPOCH)
+        model, tm, hist = train_dgcnn(graphs, graph_labels, n_epochs=N_EPOCH)
         history.append(hist)
+        test_metrics.append(tm)
 
         # Subsample a fraction of graphs to compute n-node importance
         rind = 1 + np.random.choice(len(g_case), size=round(len(g_case)*IMP_SUBSAMPLE), replace=False)
@@ -408,6 +413,10 @@ def main():
     # Save loss and accuracy trajectory 
     fig = sg.utils.plot_history(history, return_figure=True)
     fig.savefig('hist_mbqc.png')
+
+    # Save test set metrics across all DGCNN runs
+    test_metrics = pd.DataFrame(np.array(test_metrics), columns=['loss', 'accuracy', 'precision', 'recall', 'auc'])
+    test_metrics.agg(['mean', 'std']).to_csv("test_metrics_mbqc.csv")
 
 
 if __name__ == "__main__":

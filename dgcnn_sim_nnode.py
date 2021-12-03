@@ -22,6 +22,7 @@ from tensorflow.keras import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import Dense, Conv1D, MaxPool1D, Dropout, Flatten
 from tensorflow.keras.losses import binary_crossentropy, categorical_crossentropy
+from tensorflow.keras.metrics import Precision, Recall, AUC
 import tensorflow as tf
 import pickle
 
@@ -77,7 +78,8 @@ def train_dgcnn(graphs, graph_labels, n_epochs=50):
   predictions = Dense(units=1, activation="sigmoid")(x_out)
   model = Model(inputs=x_inp, outputs=predictions)
   model.compile(
-      optimizer=Adam(learning_rate=0.0001), loss=binary_crossentropy, metrics=["acc"],
+      optimizer=Adam(learning_rate=0.0001), loss=binary_crossentropy, 
+      metrics=["accuracy", Precision(name='precision'), Recall(name='recall'), AUC(name='auc')],
   )
 
   train_graphs, test_graphs = model_selection.train_test_split(
@@ -113,7 +115,7 @@ def train_dgcnn(graphs, graph_labels, n_epochs=50):
   for name, val in zip(model.metrics_names, test_metrics):
       print("\t{}: {:0.4f}".format(name, val))
   
-  return model, history
+  return model, test_metrics, history
 
 class ImportanceDGCNN:  
 
@@ -377,42 +379,60 @@ def main():
     N_EPOCH = 80 # number of epochs per run
     IMP_SUBSAMPLE = 0.5 # fraction of graphs sampled per DGCNN run used to calculate importance
     N = 10 # up to N-node importance 
+    test_metrics_all = {} # to store test set metrics across all sample sizes, case number and runs
     for i in SAMPLE_SIZES:
-      for j in range(1, N_CASES + 1):
-        print(f'Running DGCNN --- sample size {i}, case number {j}')
-        W_ctrl = pd.read_csv('W_ctrl_'+str(i)+'_'+str(j)+'.csv', dtype={'graph_id': 'int'})
-        W_case = pd.read_csv('W_case_'+str(i)+'_'+str(j)+'.csv', dtype={'graph_id': 'int'})
+        test_metrics_all[i] = {}
+        for j in range(1, N_CASES + 1):
+            print(f'Running DGCNN --- sample size {i}, case number {j}')
+            W_ctrl = pd.read_csv('W_ctrl_'+str(i)+'_'+str(j)+'.csv', dtype={'graph_id': 'int'})
+            W_case = pd.read_csv('W_case_'+str(i)+'_'+str(j)+'.csv', dtype={'graph_id': 'int'})
 
-        g_ctrl = read_graphs2(W_ctrl)
-        g_case = read_graphs2(W_case)
-        graphs = g_ctrl + g_case
-        graph_labels = pd.Series(len(g_ctrl) * ['0'] + len(g_case) * ['1'])
-        graph_labels = pd.get_dummies(graph_labels, drop_first=True)
+            g_ctrl = read_graphs2(W_ctrl)
+            g_case = read_graphs2(W_case)
+            graphs = g_ctrl + g_case
+            graph_labels = pd.Series(len(g_ctrl) * ['0'] + len(g_case) * ['1'])
+            graph_labels = pd.get_dummies(graph_labels, drop_first=True)
 
-        nn_imp_result = []
-        history = []
-        for k in range(K):
-          print(f"DGCNN Run {k+1} ...")
-          model, hist = train_dgcnn(graphs, graph_labels, n_epochs=N_EPOCH)
-          history.append(hist)
+            nn_imp_result = []
+            history = []
+            test_metrics_all[i][j] = []
+            for k in range(K):
+                print(f"DGCNN Run {k+1} ...")
+                model, tm, hist = train_dgcnn(graphs, graph_labels, n_epochs=N_EPOCH)
+                history.append(hist)
+                test_metrics_all[i][j].append(tm)
 
-          # Subsample a fraction of graphs to compute n-node importance
-          rind = 1 + np.random.choice(len(g_case), size=round(len(g_case)*IMP_SUBSAMPLE), replace=False)
-          W_case_sub = W_case[W_case['graph_id'].isin(rind)]
-          imp_calculator = ImportanceDGCNN(W_case_sub, model)
-          nn_imp = imp_calculator.nnode_imp(N) # N-node imp
+                # Subsample a fraction of graphs to compute n-node importance
+                rind = 1 + np.random.choice(len(g_case), size=round(len(g_case)*IMP_SUBSAMPLE), replace=False)
+                W_case_sub = W_case[W_case['graph_id'].isin(rind)]
+                imp_calculator = ImportanceDGCNN(W_case_sub, model)
+                nn_imp = imp_calculator.nnode_imp(N) # N-node imp
 
-          # Each model can result in different selected n-nodes (n=1,...,N), 
-          # so will not attempt to combine the LR arrays
-          nn_imp_result.append(nn_imp) 
+                # Each model can result in different selected n-nodes (n=1,...,N), 
+                # so will not attempt to combine the LR arrays
+                nn_imp_result.append(nn_imp) 
         
-        # Save n-node importance result as pickle
-        save_imp_res(nn_imp_result, runid=str(i)+'_'+str(j))
+            # Save n-node importance result as pickle
+            save_imp_res(nn_imp_result, runid=str(i)+'_'+str(j))
 
-        # Save loss and accuracy trajectory for sample size i and case number j
-        fig = sg.utils.plot_history(history, return_figure=True)
-        fig.savefig('hist_' + str(i)+'_'+str(j) + '.png')
-        
+            # Save loss and accuracy trajectory for sample size i and case number j
+            fig = sg.utils.plot_history(history, return_figure=True)
+            fig.savefig('hist_' + str(i)+'_'+str(j) + '.png')
+
+            # Aggregate test metrics over all DGCNN runs of sample size i and case number j
+            test_metrics_all[i][j] = pd.DataFrame(np.array(test_metrics_all[i][j]), 
+                                                  columns=['loss', 'accuracy', 'precision', 'recall', 'auc'])
+
+        # Aggregate over all cases
+        test_metrics_all[i] = pd.concat(test_metrics_all[i], names=['case_number','run'])
+    
+    # Aggregate over all sample sizes
+    test_metrics_all = pd.concat(test_metrics_all, names=['sample_size'])
+
+    # Save test set metrics by sample size and case number
+    test_metrics_all.groupby(level=['sample_size', 'case_number']).agg(['mean', 'std']).to_csv("test_metrics_sim.csv")
+
+    # To read this, use pd.read_csv("test_metrics_sim.csv", index_col=[0,1], header=[0,1])        
 
 if __name__ == "__main__":
     main()
