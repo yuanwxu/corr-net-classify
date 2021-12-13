@@ -5,6 +5,8 @@ library(banocc)
 library(reticulate)
 library(tidytext) # for order factor within facets in ggplot
 library(patchwork)
+theme_set(theme_minimal())
+options(bitmapType='cairo') # fix "unnable to open connection to X11 display"
 
 # Read banocc fits for all simulated control and cases
 read_bfits <- function(sample_sizes, case_number){
@@ -125,7 +127,8 @@ plot_1node_imp <- function(node_imp_dgcnn, sample_size, case_number, ntop = 5){
     
     ggplot(imp_pooled, aes(node_comb, abs(lor_pooled))) +
         geom_boxplot() +
-        labs(x = "", y = "abs(LOR)")
+        labs(x = "", y = "abs(LOR)", 
+             title = paste("Sample size:", sample_size, " Case:", case_number))
 }
 
 
@@ -150,13 +153,66 @@ plot_freq_nnode <- function(node_imp_dgcnn, sample_size, case_number, n){
     
     ggplot(df, aes(n_node)) +
         geom_bar() +
-        labs(x = "")
+        labs(x = "", title = paste("Sample size:", sample_size, " Case:", case_number),
+             subtitle = paste0(n, "-node"))
 }
 
 node_imp_dgcnn <- read_node_imp(sample_sizes = c(100, 500, 1000), case_number = 1:3)
 p_1node_100_1 <- plot_1node_imp(node_imp_dgcnn, 100, 1)
 p_freq_nnode_100_1 <- plot_freq_nnode(node_imp_dgcnn, 100, 1, 3)
 
+# 1-node boxplot across all samples sizes and case numbers
+sample_sizes <- c(100, 500, 1000)
+case_number <- 1:3
+p_1node <- vector("list", length(sample_sizes)*length(case_number))
+i <- 1
+for (ss in sample_sizes) {
+    for (cn in case_number) {
+        p_1node[[i]] <- plot_1node_imp(node_imp_dgcnn, ss, cn, ntop = 5) +
+            theme(axis.text.x=element_text(angle = 90, vjust = 0.5, face = "bold"))
+        i <- i + 1
+    }
+}
+wrap_plots(p_1node, nrow = 3)
+ggsave("p_1node.png", width = 10, height = 9, units = "in", dpi = 350)
+
+
+# n-node frequency barplot across all samples sizes and case numbers
+p_freq_nnode <- vector("list", length(sample_sizes)*length(case_number))
+i <- 1
+for (ss in sample_sizes) {
+    # Highlight nodes used for association spike-in
+    color_tbl <- tibble(node = paste0("Feature", 1:100), color = "grey30")
+    if (ss == 100) {
+        color_tbl$color[c(98, 49, 27, 82, 41)] <- "yellow"
+    }
+    if (ss == 500) {
+        color_tbl$color[c(30, 36, 50, 57, 68)] <- "forestgreen"
+    }
+    if (ss == 1000) {
+        color_tbl$color[c(61, 7, 23, 62, 97)] <- "blue"
+    }
+    
+    for (cn in case_number) {
+        if (cn == 1) {
+            p_freq_nnode[[i]] <- plot_freq_nnode(node_imp_dgcnn, ss, cn, n = 3)
+        }
+        else if (cn == 2) {
+            p_freq_nnode[[i]] <- plot_freq_nnode(node_imp_dgcnn, ss, cn, n = 4)
+        }
+        else {
+            p_freq_nnode[[i]] <- plot_freq_nnode(node_imp_dgcnn, ss, cn, n = 5)
+        }
+        p_freq_nnode[[i]] <- p_freq_nnode[[i]] +
+            geom_bar(aes(fill = n_node)) +
+            scale_fill_manual(breaks = color_tbl$node, values = color_tbl$color) +
+            theme(axis.text.x=element_text(angle = 90, vjust = 0.5, face = "bold"),
+                  legend.position = "none")
+        i <- i + 1
+    }
+}
+wrap_plots(p_freq_nnode, nrow = 3)
+ggsave("p_freq_nnode.png", width = 10, height = 9, units = "in", dpi = 350)
 
 
 
@@ -164,8 +220,10 @@ p_freq_nnode_100_1 <- plot_freq_nnode(node_imp_dgcnn, 100, 1, 3)
 
 library(igraph)
 
-viz_corr_network <- function(nonzero_cor, sample_size, case_number, corr_thresh, 
-                             grp = "Case", show_comm = FALSE, title = ""){
+# Visualize posterior median correlation networks inferred from BAnOCC
+# Edge width prop to corr strength
+# Edge color indicates corr sign
+viz_corr_network <- function(nonzero_cor, sample_size, case_number, corr_thresh, grp = "Case"){
     ss <- as.character(sample_size)
     cn <- as.character(case_number)
     
@@ -183,26 +241,27 @@ viz_corr_network <- function(nonzero_cor, sample_size, case_number, corr_thresh,
         graph_from_data_frame(directed = FALSE)
         
     ew <- abs(E(ig)$median*5) # edge width
-    l <- layout_with_graphopt(ig, charge = 0.05, mass = 50) # layout
-    if (show_comm) { # Run community detection
-        clp <- cluster_optimal(ig)
-        plot(clp, ig, edge.width = ew, 
-             edge.color = ifelse(E(ig)$median > 0, "blue", "orangered"),
-             vertex.label.color="black", layout = l, main = title, frame = TRUE)
-    }
-    else {
-        # Edge width prop to strength of corr
-        # Edge color indicates pos or neg corr
-        plot(ig, edge.width = ew,
-             edge.color = ifelse(E(ig)$median > 0, "lightblue", "salmon"),
-             vertex.label.color="black", layout = l, main = title, frame = TRUE)
-            # vertex.label.cex=1.5
-    }
+    l <- layout_nicely(ig)
+    # l <- layout_with_graphopt(ig, charge = 0.05, mass = 50) # layout
+    
+    plot(ig, edge.width = ew, edge.color = ifelse(E(ig)$median > 0, "lightblue2", "tomato"),
+         vertex.label.color="black", vertex.label.dist = 2, vertex.size = 17,
+         layout = l, main = paste("Sample size:", sample_size, " Case number:", case_number))
+        # vertex.label.cex=1.5
 }
 
 
 nonzero_cor <- get_nonzero_corr_all(sample_sizes = c(100, 500, 1000), case_number = 1:3)
 viz_corr_network(nonzero_cor, 100, 1, 0.3)
+
+png("p_corr_net_sim.png", width = 10.5, height = 9, units = "in", bg = "transparent", res = 350)
+graphics::layout(mat = matrix(1:9, nrow = 3, byrow = TRUE))
+for (ss in sample_sizes) {
+    for (cn in case_number) {
+        viz_corr_network(nonzero_cor, ss, cn, corr_thresh = 0.2)
+    }
+}
+dev.off()
 
 
 # graphics::layout(mat = matrix(c(1,2,3), nrow = 1))

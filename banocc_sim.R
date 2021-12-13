@@ -55,7 +55,8 @@ run_banocc_sim <- function(sim_data, banocc_params, hmc_params, save_fits = TRUE
                                    iter = hmc_params$iter,
                                    thin = hmc_params$thin,
                                    warmup = hmc_params$warmup,
-                                   cores = 4)
+                                   cores = 4,
+                                   control = list(adapt_delta = 0.95))
             time1 <- Sys.time()
             cat("Finished banocc for control group --- Sample size:", names(sim_data)[i], 
                 "Case number:", names(sim_data[[i]])[j], "[", time1-time0, "]", "\n")
@@ -72,7 +73,8 @@ run_banocc_sim <- function(sim_data, banocc_params, hmc_params, save_fits = TRUE
                                    iter = hmc_params$iter,
                                    thin = hmc_params$thin,
                                    warmup = hmc_params$warmup,
-                                   cores = 4)
+                                   cores = 4,
+                                   control = list(adapt_delta = 0.95))
             time1 <- Sys.time()
             cat("Finished banocc for case group --- Sample size:", names(sim_data)[i], 
                 "Case number:", names(sim_data[[i]])[j], "[", time1-time0, "]", "\n")
@@ -131,5 +133,5 @@ hmc_params <- list(iter = 5000,
                    warmup = 2500,
                    thin = 20)
 run_banocc_sim(sim_otu_tab, banocc_params, hmc_params)
-                      
-# change adapt_delta parameter in stan to 0.95 (divergent transitions encountered)
+
+print(warnings())
